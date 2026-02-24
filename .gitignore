@@ -1,0 +1,41 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ─── Virtual env ─────────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ─── Model weights (large binary files — store locally, never commit) ────────
+models/
+!models/.gitkeep
+
+# ─── Audio data ──────────────────────────────────────────────────────────────
+audio/input/*
+audio/output/*
+!audio/input/.gitkeep
+!audio/output/.gitkeep
+
+# ─── Environment / secrets ───────────────────────────────────────────────────
+.env
+# .env.example is intentionally NOT ignored — commit it as documentation
+
+# ─── IDE / OS ────────────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ─── Test / coverage ─────────────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/

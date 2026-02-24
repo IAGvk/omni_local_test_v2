@@ -1,0 +1,62 @@
+# =====================================================================
+# Qwen2.5-Omni v2 — Requirements
+# Python 3.11.x | Tested on Apple Silicon M3 Pro + CUDA (Linux)
+# =====================================================================
+
+# --- PyTorch (Apple Silicon MPS build) ---
+# NOTE: CUDA users should install via https://pytorch.org/get-started/locally/
+torch==2.4.1
+torchaudio==2.4.1
+torchvision==0.19.1
+
+# --- HuggingFace Transformers Stack ---
+transformers==4.51.3
+accelerate==0.34.2
+tokenizers==0.21.1
+safetensors==0.4.5
+huggingface_hub>=0.30.0
+
+# --- Qwen Omni Audio Utilities ---
+# Install from source (not on PyPI):
+#   pip install git+https://github.com/QwenLM/qwen-omni-utils.git
+# qwen-omni-utils
+
+# --- Audio Processing ---
+soundfile==0.12.1
+librosa==0.10.2
+numpy>=1.26.0,<2.0.0          # numpy 2.x breaks librosa/soundfile
+scipy==1.13.1
+audioread==3.0.1
+
+# --- Tokenizer deps ---
+tiktoken==0.7.0
+
+# --- Image handling (required even for audio-only pipelines) ---
+Pillow==10.4.0
+
+# --- FastAPI + ASGI server ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9       # multipart file upload for POST /infer
+websockets>=12.0               # WebSocket support (ws://host/ws/stream)
+
+# --- Pydantic v2 + Settings ---
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# --- Model download ---
+requests==2.32.3
+tqdm==4.66.5
+modelscope==1.20.1
+
+# --- Utilities ---
+packaging==24.1
+filelock==3.15.4
+pyyaml==6.0.2
+
+# --- Testing ---
+pytest>=8.0.0
+pytest-asyncio>=0.23.0        # async test support for WebSocket tests
+
+# --- Optional: real-time mic input (future) ---
+pyaudio==0.2.14
