@@ -167,7 +167,7 @@ class QwenOmniBackend(ModelBackend):
             tokenize=False,
         )
 
-        audios, images, videos, _ = process_mm_info(messages, use_audio_in_video=False)
+        audios, images, videos = process_mm_info(messages, use_audio_in_video=False)
 
         inputs = self.processor(
             text=text_prompt,

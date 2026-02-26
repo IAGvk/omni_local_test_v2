@@ -33,6 +33,7 @@ import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.rest.router import router
 from app.api.ws.stream import ws_router
@@ -95,6 +96,16 @@ def create_app() -> FastAPI:
         ),
         version  = "2.0.0",
         lifespan = lifespan,
+    )
+
+    # Allow the Streamlit UI (default port 8501) and any local origin to reach
+    # the API. Tighten allow_origins in production.
+    application.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:8501", "http://127.0.0.1:8501"],
+        allow_origin_regex=r"http://localhost:\d+",
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     application.include_router(router)

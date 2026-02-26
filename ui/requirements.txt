@@ -1,0 +1,20 @@
+# =====================================================================
+# Omni UI — requirements (install alongside the main v2 requirements)
+#
+#   pip install -r ui/requirements.txt
+#
+# These are purely UI-layer dependencies. The v2 backend requirements
+# (requirements.txt in the root of v2/) are NOT repeated here.
+# =====================================================================
+
+# --- Streamlit UI framework ---
+# autoplay= in st.audio requires >= 1.28.0
+streamlit>=1.32.0
+
+# --- Browser-based microphone recorder component ---
+audio-recorder-streamlit>=0.0.8
+
+# --- HTTP client (to call POST /infer and GET /audio/{filename}) ---
+# requests is already in the main requirements.txt but listed here
+# so the UI can be installed standalone.
+requests>=2.31.0

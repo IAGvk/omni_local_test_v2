@@ -90,6 +90,8 @@ class TestRead:
         with pytest.raises(FileNotFoundError):
             io.read("/nonexistent/audio/file.wav")
 
+    @pytest.mark.filterwarnings("ignore::DeprecationWarning:librosa")
+    @pytest.mark.filterwarnings("ignore::FutureWarning:librosa")
     def test_resample(self, io, tmp_path):
         sr_native = 44100
         sr_target = 16000
@@ -99,6 +101,5 @@ class TestRead:
         sf.write(str(path), audio, sr_native)
         loaded, loaded_sr = io.read(path, target_sr=sr_target)
         assert loaded_sr == sr_target
-        # Within 1% of expected length after resampling
-        expected_len = sr_target * 1.0
-        assert abs(len(loaded) - expected_len) / expected_len < 0.01
+        # Resampled 1s of audio should be within 1% of sr_target samples
+        assert abs(len(loaded) - sr_target) / sr_target < 0.01
