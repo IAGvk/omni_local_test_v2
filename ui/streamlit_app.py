@@ -57,6 +57,25 @@ if "active_audio" not in st.session_state:
 if "active_audio_label" not in st.session_state:
     st.session_state.active_audio_label: str = ""
 
+# ── Pending inference job ─────────────────────────────────────────────────────
+# Populated when a job is submitted; cleared when the result is received.
+
+if "job_id" not in st.session_state:
+    st.session_state.job_id: str | None = None
+
+if "job_start_time" not in st.session_state:
+    st.session_state.job_start_time: float = 0.0
+
+# Snapshot of the audio + prompt at submission time so we can save to history
+if "job_audio" not in st.session_state:
+    st.session_state.job_audio: bytes | None = None
+
+if "job_audio_label" not in st.session_state:
+    st.session_state.job_audio_label: str = ""
+
+if "job_system_prompt" not in st.session_state:
+    st.session_state.job_system_prompt: str = ""
+
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -210,6 +229,7 @@ if st.session_state.active_audio:
             "🚀  Send to Omni",
             type="primary",
             use_container_width=True,
+            disabled=bool(st.session_state.job_id),  # locked while job is running
         )
 
     with col_discard:
@@ -218,70 +238,118 @@ if st.session_state.active_audio:
             st.session_state.active_audio_label = ""
             st.rerun()
 
-    # ── Step 2 · Inference ─────────────────────────────────────────────────
+    # ── Step 2 · Submit inference job (non-blocking) ───────────────────────
     if send_clicked:
-        audio_to_send = st.session_state.active_audio   # snapshot before spinner rerun
+        audio_to_send = st.session_state.active_audio
+        files = {"audio": ("question.wav", io.BytesIO(audio_to_send), "audio/wav")}
+        data: dict[str, str] = {"return_audio": "true" if return_audio else "false"}
+        if system_prompt.strip():
+            data["system_prompt"] = system_prompt.strip()
 
-        with st.spinner("Running inference — this may take a moment…"):
-            try:
-                files = {
-                    "audio": ("question.wav", io.BytesIO(audio_to_send), "audio/wav")
-                }
-                data: dict[str, str] = {
-                    "return_audio": "true" if return_audio else "false",
-                }
-                if system_prompt.strip():
-                    data["system_prompt"] = system_prompt.strip()
-
-                t0 = time.perf_counter()
-                resp = requests.post(
-                    f"{backend_url}/infer",
-                    files=files,
-                    data=data,
-                    timeout=900,   # Qwen2.5-Omni audio generation can take 500-700s
-                )
-                resp.raise_for_status()
-                result: dict = resp.json()
-                wall_s = time.perf_counter() - t0
-
-                # ── Fetch response audio ───────────────────────────────────
-                response_audio_bytes: bytes | None = None
-                if result.get("audio_path") and return_audio:
-                    audio_url = f"{backend_url}/audio/{result['audio_path']}"
-                    ar = requests.get(audio_url, timeout=30)
-                    if ar.ok:
-                        response_audio_bytes = ar.content
-
-                # ── Persist in session history ─────────────────────────────
-                st.session_state.history.append(
-                    {
-                        "question_audio": audio_to_send,
-                        "question_label": st.session_state.active_audio_label,
-                        "system_prompt":  system_prompt.strip() or "(server default)",
-                        "text":           result["text"],
-                        "audio_bytes":    response_audio_bytes,
-                        "latency_s":      result["latency_s"],
-                        "model":          result["model"],
-                        "wall_s":         wall_s,
-                    }
-                )
-                st.rerun()   # re-render so the history section shows the new turn
-
-            except requests.exceptions.HTTPError as exc:
-                st.error(
-                    f"Backend error ({exc.response.status_code}): "
-                    f"{exc.response.text}"
-                )
-            except requests.exceptions.ConnectionError:
-                st.error(
-                    "❌  Cannot reach the backend.\n\n"
-                    "Make sure `uvicorn app.main:app --port 8000` is running."
-                )
-            except Exception as exc:
-                st.error(f"Unexpected error: {exc}")
+        try:
+            resp = requests.post(
+                f"{backend_url}/infer/submit",
+                files=files,
+                data=data,
+                timeout=30,  # only the upload — inference runs in background
+            )
+            resp.raise_for_status()
+            st.session_state.job_id           = resp.json()["job_id"]
+            st.session_state.job_start_time   = time.perf_counter()
+            st.session_state.job_audio        = audio_to_send
+            st.session_state.job_audio_label  = st.session_state.active_audio_label
+            st.session_state.job_system_prompt = system_prompt.strip() or "(server default)"
+            st.rerun()
+        except requests.exceptions.HTTPError as exc:
+            st.error(f"Submit failed ({exc.response.status_code}): {exc.response.text}")
+        except requests.exceptions.ConnectionError:
+            st.error("❌  Cannot reach the backend.\n\nMake sure `uvicorn app.main:app --port 8000` is running.")
+        except Exception as exc:
+            st.error(f"Unexpected error: {exc}")
 
 else:
     st.info("🎤  Press the microphone button above to record your question.")
+
+st.markdown("---")
+
+# ── Step 2 · Poll for inference result ────────────────────────────────────────
+# This section re-renders every 5 s (via st.rerun) until the job finishes.
+# Because the blocking work is in a FastAPI background thread, Streamlit's
+# WebSocket to the browser stays alive the whole time.
+
+if st.session_state.job_id:
+    elapsed  = time.perf_counter() - st.session_state.job_start_time
+    # Rough progress bar — model typically finishes in 500-700 s
+    progress = min(elapsed / 650, 0.98)
+    st.subheader("⏳  Inference in progress")
+    st.progress(progress, text=f"{elapsed:.0f}s elapsed — model typically takes 500–700s")
+
+    try:
+        poll = requests.get(
+            f"{backend_url}/infer/poll/{st.session_state.job_id}",
+            timeout=10,
+        )
+        poll.raise_for_status()
+        job = poll.json()
+
+        if job["status"] == "pending":
+            time.sleep(5)   # wait 5 s, then rerun to re-poll
+            st.rerun()
+
+        elif job["status"] == "done":
+            result   = job["result"]
+            wall_s   = time.perf_counter() - st.session_state.job_start_time
+
+            # ── Fetch response audio from storage ─────────────────────────
+            response_audio_bytes: bytes | None = None
+            if not result.get("audio_path"):
+                if return_audio:
+                    st.warning(
+                        "⚠️  Backend returned no audio path. "
+                        "Check that `OMNI_RETURN_AUDIO` is not `false` on the server."
+                    )
+            elif return_audio:
+                audio_url = f"{backend_url}/audio/{result['audio_path']}"
+                ar = requests.get(audio_url, timeout=30)
+                if ar.ok:
+                    response_audio_bytes = ar.content
+                else:
+                    st.error(
+                        f"❌  Audio fetch failed — HTTP {ar.status_code} "
+                        f"for `{audio_url}`\n\n{ar.text[:300]}"
+                    )
+
+            # ── Save to history ────────────────────────────────────────────
+            st.session_state.history.append({
+                "question_audio": st.session_state.job_audio,
+                "question_label": st.session_state.job_audio_label,
+                "system_prompt":  st.session_state.job_system_prompt,
+                "text":           result["text"],
+                "audio_bytes":    response_audio_bytes,
+                "latency_s":      result["latency_s"],
+                "model":          result["model"],
+                "wall_s":         wall_s,
+            })
+
+            # ── Clear job state ────────────────────────────────────────────
+            st.session_state.job_id         = None
+            st.session_state.job_audio      = None
+            st.session_state.job_audio_label  = ""
+            st.session_state.job_system_prompt = ""
+            st.rerun()
+
+        elif job["status"] == "error":
+            st.error(f"❌  Inference failed: {job['error']}")
+            st.session_state.job_id = None
+
+    except requests.exceptions.ConnectionError:
+        st.error("❌  Lost connection to backend while polling.")
+        time.sleep(5)
+        st.rerun()
+    except Exception as exc:
+        st.error(f"Polling error: {exc}")
+        time.sleep(5)
+        st.rerun()
 
 st.markdown("---")
 
