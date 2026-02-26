@@ -37,12 +37,25 @@ st.set_page_config(
 # ── Session state defaults ─────────────────────────────────────────────────────
 
 if "history" not in st.session_state:
-    # Each entry: {question_audio, text, audio_bytes, latency_s, model, wall_s}
+    # Each entry: {question_audio, text, audio_bytes, latency_s, model, wall_s, prompt}
     st.session_state.history: list[dict] = []
 
 if "last_audio_key" not in st.session_state:
-    # Used to detect when a new recording has been made
+    # Used to detect when a new recording has arrived from the mic component
     st.session_state.last_audio_key: bytes | None = None
+
+if "saved_recordings" not in st.session_state:
+    # Bank of recordings kept for the whole session.
+    # Each entry: {"label": str, "audio_bytes": bytes}
+    st.session_state.saved_recordings: list[dict] = []
+
+if "active_audio" not in st.session_state:
+    # The audio currently queued to be sent — either a fresh mic recording
+    # or one loaded from the saved bank.
+    st.session_state.active_audio: bytes | None = None
+
+if "active_audio_label" not in st.session_state:
+    st.session_state.active_audio_label: str = ""
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 
@@ -129,12 +142,66 @@ audio_bytes: bytes | None = audio_recorder(
     sample_rate=16_000,    # 16 kHz — matches Qwen2.5-Omni expected input
 )
 
-if audio_bytes:
-    # Detect a fresh recording (audio_recorder re-returns same bytes on reruns)
-    is_new_recording = audio_bytes != st.session_state.last_audio_key
+# ── Auto-save any brand-new mic recording to the session bank ─────────────────
+if audio_bytes and audio_bytes != st.session_state.last_audio_key:
+    st.session_state.last_audio_key = audio_bytes
+    n     = len(st.session_state.saved_recordings) + 1
+    label = f"Recording {n}"
+    st.session_state.saved_recordings.append(
+        {"label": label, "audio_bytes": audio_bytes}
+    )
+    # Make the new recording the active one automatically
+    st.session_state.active_audio       = audio_bytes
+    st.session_state.active_audio_label = f"🎙️ {label} (just recorded)"
+    st.rerun()
 
-    st.audio(audio_bytes, format="audio/wav")
-    st.caption("✅  Recorded — review above, then send.")
+# ── Saved recordings bank ─────────────────────────────────────────────────────
+if st.session_state.saved_recordings:
+    with st.expander(
+        f"📁  Saved recordings ({len(st.session_state.saved_recordings)}) "
+        "— load any to re-send with a different system prompt",
+        expanded=False,
+    ):
+        options   = [r["label"] for r in st.session_state.saved_recordings]
+        # Default selection: whichever is currently active, else the latest
+        try:
+            default_idx = next(
+                i for i, r in enumerate(st.session_state.saved_recordings)
+                if r["audio_bytes"] == st.session_state.active_audio
+            )
+        except StopIteration:
+            default_idx = len(options) - 1
+
+        selected_label = st.selectbox(
+            "Choose a recording", options, index=default_idx, label_visibility="collapsed"
+        )
+        sel_idx   = options.index(selected_label)
+        sel_audio = st.session_state.saved_recordings[sel_idx]["audio_bytes"]
+
+        st.audio(sel_audio, format="audio/wav")
+
+        col_load, col_del = st.columns([3, 1])
+        with col_load:
+            if st.button("↩️  Load as active", use_container_width=True, key="btn_load"):
+                st.session_state.active_audio       = sel_audio
+                st.session_state.active_audio_label = f"📁  {selected_label}"
+                st.rerun()
+        with col_del:
+            if st.button("🗑️  Delete", use_container_width=True, key="btn_del_rec"):
+                st.session_state.saved_recordings.pop(sel_idx)
+                # Re-number remaining recordings so labels stay clean
+                for i, rec in enumerate(st.session_state.saved_recordings, start=1):
+                    rec["label"] = f"Recording {i}"
+                # If the deleted one was active, clear active audio
+                if st.session_state.active_audio == sel_audio:
+                    st.session_state.active_audio       = None
+                    st.session_state.active_audio_label = ""
+                st.rerun()
+
+# ── Active audio preview + send ───────────────────────────────────────────────
+if st.session_state.active_audio:
+    st.markdown(f"**Active:** {st.session_state.active_audio_label}")
+    st.audio(st.session_state.active_audio, format="audio/wav")
 
     col_send, col_discard = st.columns([3, 1])
 
@@ -143,23 +210,22 @@ if audio_bytes:
             "🚀  Send to Omni",
             type="primary",
             use_container_width=True,
-            disabled=not is_new_recording,
         )
 
     with col_discard:
-        if st.button("✖  Discard", use_container_width=True):
-            # Mark this audio as "seen" so the send button re-disables
-            st.session_state.last_audio_key = audio_bytes
+        if st.button("✖  Deselect", use_container_width=True):
+            st.session_state.active_audio       = None
+            st.session_state.active_audio_label = ""
             st.rerun()
 
     # ── Step 2 · Inference ─────────────────────────────────────────────────
-    if send_clicked and is_new_recording:
-        st.session_state.last_audio_key = audio_bytes   # mark as consumed
+    if send_clicked:
+        audio_to_send = st.session_state.active_audio   # snapshot before spinner rerun
 
         with st.spinner("Running inference — this may take a moment…"):
             try:
                 files = {
-                    "audio": ("question.wav", io.BytesIO(audio_bytes), "audio/wav")
+                    "audio": ("question.wav", io.BytesIO(audio_to_send), "audio/wav")
                 }
                 data: dict[str, str] = {
                     "return_audio": "true" if return_audio else "false",
@@ -172,7 +238,7 @@ if audio_bytes:
                     f"{backend_url}/infer",
                     files=files,
                     data=data,
-                    timeout=180,   # model inference can be slow on CPU / first run
+                    timeout=900,   # Qwen2.5-Omni audio generation can take 500-700s
                 )
                 resp.raise_for_status()
                 result: dict = resp.json()
@@ -189,7 +255,9 @@ if audio_bytes:
                 # ── Persist in session history ─────────────────────────────
                 st.session_state.history.append(
                     {
-                        "question_audio": audio_bytes,
+                        "question_audio": audio_to_send,
+                        "question_label": st.session_state.active_audio_label,
+                        "system_prompt":  system_prompt.strip() or "(server default)",
                         "text":           result["text"],
                         "audio_bytes":    response_audio_bytes,
                         "latency_s":      result["latency_s"],
@@ -229,8 +297,10 @@ if st.session_state.history:
 
         with st.expander(f"Turn {turn_number}", expanded=is_latest):
             # ── Your question ──────────────────────────────────────────────
-            st.markdown("**🧑  You:**")
+            q_label = turn.get("question_label", "")
+            st.markdown(f"**🧑  You:** _{q_label}_")
             st.audio(turn["question_audio"], format="audio/wav")
+            st.caption(f"System prompt: `{turn.get('system_prompt', '(server default)')}`")
 
             # ── Model text response ────────────────────────────────────────
             st.markdown(f"**🤖  Omni:** {turn['text']}")
