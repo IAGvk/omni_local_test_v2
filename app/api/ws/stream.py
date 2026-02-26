@@ -5,12 +5,30 @@ stream.py — WebSocket endpoint for real-time audio streaming.
   CURRENT STATUS: "chunked request / single response"
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-The protocol is fully specified for future token-level streaming.
+The protocol is fully specified and ready for token-level streaming.
 Today, the model runs a full inference pass and the result is
-returned as one final chunk. When Qwen2.5-Omni streaming output
-is available, replace _run_inference_ws() with an async generator
-that yields StreamChunks — zero protocol changes needed on the
-client side.
+returned as one final WSChunk (is_final=True). Zero protocol changes
+are needed on the client side when streaming is enabled.
+
+STREAMING UPGRADE PATH (for developers / AI agents)
+────────────────────────────────────────────────────
+The only change required when Qwen2.5-Omni streaming becomes available
+in transformers is:
+
+  1. In app/adapters/model/qwen_omni.py:
+     Override ModelBackend.stream() with a real async generator that
+     yields StreamChunk objects as tokens are produced by the model.
+
+  2. In this file (stream.py):
+     Replace the single service.infer_from_array() call in step [3]
+     with an `async for chunk in backend.stream(...)` loop that sends
+     one WSChunk text frame per yielded chunk.
+
+  Nothing else changes — not InferenceService, not the port interface,
+  not the REST endpoints, not the Streamlit UI.
+
+  See ARCHITECTURE.md § "Streaming — Current Status & Upgrade Path"
+  for the full explanation and code sketch.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   WebSocket Protocol  ws://host/ws/stream
