@@ -228,6 +228,8 @@ class QwenOmniBackend(ModelBackend):
                 thinker_do_sample=self._cfg.thinker_do_sample,
                 return_audio=self._cfg.return_audio,
                 use_audio_in_video=False,
+                **({"max_new_tokens": self._cfg.max_new_tokens}
+                   if self._cfg.max_new_tokens > 0 else {}),
             )
 
         latency = time.perf_counter() - t0

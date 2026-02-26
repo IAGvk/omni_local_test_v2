@@ -15,6 +15,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import tempfile
 import uuid
 from pathlib import Path
@@ -36,6 +37,19 @@ from app.services.session import SessionManager
 
 router = APIRouter()
 
+# ── Dedicated inference executor ──────────────────────────────────────────────
+# CRITICAL for Apple MPS: PyTorch's Metal backend silently falls back to CPU
+# when model.generate() is called from a thread that didn't load the weights.
+# At CPU speed, Qwen2.5-Omni-3B takes 1000+ seconds per call.
+#
+# Fix: use a single-threaded executor so the model is always loaded AND used
+# in the same OS thread (thread T1).  max_workers=1 also prevents concurrent
+# inference requests from racing for device memory.
+_inference_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="omni-inference",
+)
+
 # ── In-memory job store (single-user / small-team local deployment) ────────────
 # Each entry: {"status": "pending"|"done"|"error", "result": dict, "error": str}
 # Not persistent — lost on server restart.  Upgrade to Redis for production.
@@ -51,7 +65,7 @@ def _run_inference_job(
     delete_audio_after: bool,    # True for temp files, False for session files
 ) -> dict:
     """
-    Synchronous worker — runs in a thread pool via asyncio.to_thread.
+    Synchronous worker — always runs in _inference_executor (thread T1).
 
     delete_audio_after=True   : single-turn flow (temp file is cleaned up)
     delete_audio_after=False  : multi-turn flow  (session file must stay
@@ -147,9 +161,12 @@ async def infer(
         tmp_path = Path(tmp.name)
 
     try:
-        result = service.infer_from_file(
-            input_path    = tmp_path,
-            system_prompt = system_prompt,
+        loop   = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            _inference_executor,
+            service.infer_from_file,
+            tmp_path,
+            system_prompt,
         )
     finally:
         tmp_path.unlink(missing_ok=True)
@@ -254,7 +271,9 @@ async def infer_submit(
 
     async def _run() -> None:
         try:
-            result = await asyncio.to_thread(
+            loop   = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                _inference_executor,
                 _run_inference_job,
                 service, audio_path, system_prompt, return_audio,
                 history, delete_audio_after,

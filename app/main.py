@@ -41,6 +41,10 @@ from app.core.config import get_settings
 from app.core.logging import setup_logging
 from app.services.registry import ModelRegistry
 
+# Import the shared executor so we can load the model in the same thread
+# that will run all future model.generate() calls.
+from app.api.rest.router import _inference_executor
+
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -70,9 +74,14 @@ async def lifespan(app: FastAPI):
     if n_cleaned:
         logger.info("Session cleanup: removed %d expired session(s).", n_cleaned)
 
-    # ── Load model (blocks until weights are in device memory) ────────────────
+    # ── Load model in the inference executor thread ───────────────────────────
+    # CRITICAL for MPS: model weights must be loaded by the same OS thread that
+    # will call model.generate().  Loading here in the event-loop thread and
+    # generating in a thread-pool thread causes MPS to fall back to CPU
+    # silently, resulting in 1000+ second inference times.
     registry = ModelRegistry(settings=cfg)
-    registry.load()
+    loop     = asyncio.get_event_loop()
+    await loop.run_in_executor(_inference_executor, registry.load)
     app.state.registry = registry
 
     logger.info(
@@ -83,8 +92,9 @@ async def lifespan(app: FastAPI):
 
     yield  # ← server is running here
 
-    # ── Shutdown: release device memory ───────────────────────────────────────
+    # ── Shutdown: release device memory and executor ──────────────────────────
     registry.unload()
+    _inference_executor.shutdown(wait=False)
     logger.info("Server shutdown complete.")
 
 

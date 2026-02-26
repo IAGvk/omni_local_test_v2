@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     output_sample_rate: int       = 24000      # Qwen2.5-Omni native output rate
     return_audio: bool            = True
 
+    # Hard ceiling on tokens the Talker (speech decoder) can generate.
+    # thinker_max_new_tokens caps only the reasoning phase; this caps the
+    # speech token stream.  At ~80 speech tokens / second, 2048 ≈ 25 seconds
+    # of audio output.  Increase if long responses are cut short.
+    # Set OMNI_MAX_NEW_TOKENS=0 to remove the cap entirely (use with caution).
+    max_new_tokens: int           = 2048
+
     # ── System prompt ─────────────────────────────────────────────────────────
     # IMPORTANT: This exact wording is required for Qwen2.5-Omni audio output.
     # Changing it may silently disable audio generation.
