@@ -97,6 +97,28 @@ class Settings(BaseSettings):
     # ── Streaming (reserved — not yet implemented in the model adapter) ───────
     streaming_chunk_tokens: int = 50
 
+    # ── Multi-turn conversation ───────────────────────────────────────────────
+    # Set OMNI_MODEL_SUPPORTS_MULTI_TURN=false if the loaded model does not
+    # support multi-turn (e.g. very small context window or single-turn only).
+    model_supports_multi_turn: bool = True
+
+    # Context window of the model in tokens.
+    # Qwen2.5-Omni-3B = 32 768. Update when switching to a different model.
+    context_window_tokens: int = 32768
+
+    # Approximate audio feature tokens generated per second of input audio.
+    # Qwen2.5-Omni encodes audio at ~25 tokens / second.
+    audio_tokens_per_second: float = 25.0
+
+    # Token budget reserved for the system prompt (conservative estimate).
+    system_prompt_reserve_tokens: int = 100
+
+    # Root directory for per-session audio files (multi-turn mode).
+    sessions_dir: Path = ROOT / "audio" / "sessions"
+
+    # Sessions older than this many hours are deleted at server startup.
+    session_ttl_hours: int = 24
+
     # ── Derived properties ────────────────────────────────────────────────────
 
     @property

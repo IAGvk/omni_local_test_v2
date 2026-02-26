@@ -34,6 +34,28 @@ class HealthResponse(BaseModel):
     model_ready: bool
     model_path: str
     profile: str
+    model_supports_multi_turn: bool  = True
+    max_audio_minutes: float         = 20.0
+    context_window_tokens: int       = 32768
+
+
+# ── REST: /conversation/* ─────────────────────────────────────────────────────
+
+class ConversationTurnSchema(BaseModel):
+    """Summary of one completed turn, returned by /conversation endpoints."""
+    turn_index: int
+    audio_duration_s: float
+    audio_tokens: int
+    response_preview: str            # first 120 chars of model response
+
+
+class ConversationSummaryResponse(BaseModel):
+    """Full session summary: all turns + context budget status."""
+    conversation_id: str
+    turns: list[ConversationTurnSchema]
+    used_audio_minutes: float
+    max_audio_minutes: float
+    context_used_pct: float          # 0.0 – 1.0
 
 
 # ── WebSocket: /ws/stream ─────────────────────────────────────────────────────

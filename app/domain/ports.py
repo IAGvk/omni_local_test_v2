@@ -53,6 +53,22 @@ class StreamChunk:
     is_final: bool               = False
 
 
+@dataclass
+class HistoryTurn:
+    """
+    One prior turn in a multi-turn conversation.
+
+    Passed as a list to ModelBackend.process() when multi-turn is enabled.
+    The model adapter appends each turn as a user+assistant message pair
+    before the current user message, giving the model conversational context.
+
+    input_audio_path must be an absolute path to a WAV file that will
+    remain on disk for the lifetime of the conversation session.
+    """
+    input_audio_path: str   # absolute path to the saved input WAV
+    response_text: str      # model's prior text response for this turn
+
+
 # ── Port: ModelBackend ─────────────────────────────────────────────────────────
 
 class ModelBackend(ABC):
@@ -77,6 +93,7 @@ class ModelBackend(ABC):
         audio: np.ndarray,
         sample_rate: int,
         system_prompt: Optional[str] = None,
+        history: Optional[list["HistoryTurn"]] = None,
     ) -> InferenceResult:
         """
         Synchronous inference pass.
@@ -85,6 +102,8 @@ class ModelBackend(ABC):
             audio         : float32 mono PCM array
             sample_rate   : sample rate of the input audio
             system_prompt : optional override for the default system prompt
+            history       : prior conversation turns for multi-turn mode.
+                            None or [] means single-turn (stateless) behaviour.
 
         Returns:
             InferenceResult with text and optional audio

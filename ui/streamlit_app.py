@@ -75,7 +75,28 @@ if "job_audio_label" not in st.session_state:
 
 if "job_system_prompt" not in st.session_state:
     st.session_state.job_system_prompt: str = ""
+# ── Multi-turn session state ─────────────────────────────────────────────────────────────────────────
 
+if "multi_turn_enabled" not in st.session_state:
+    # Whether the user has turned multi-turn mode ON
+    st.session_state.multi_turn_enabled: bool = False
+
+if "conversation_id" not in st.session_state:
+    # Active conversation session on the backend (None = not started yet)
+    st.session_state.conversation_id: str | None = None
+
+if "session_turns" not in st.session_state:
+    # Local mirror of completed turns — populated from turn_summary in poll results
+    # Each entry: {turn_index, audio_duration_s, audio_tokens, response_preview}
+    st.session_state.session_turns: list[dict] = []
+
+if "model_supports_multi_turn" not in st.session_state:
+    # Populated from GET /health — drives whether the toggle is shown
+    st.session_state.model_supports_multi_turn: bool = False
+
+if "max_audio_minutes" not in st.session_state:
+    # Context budget ceiling from the backend (minutes)
+    st.session_state.max_audio_minutes: float = 20.0
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -117,11 +138,16 @@ with st.sidebar:
             r.raise_for_status()
             h = r.json()
             model_name = h["model_path"].split("/")[-1]
+            # Store capability flags for use elsewhere in the UI
+            st.session_state.model_supports_multi_turn = h.get("model_supports_multi_turn", False)
+            st.session_state.max_audio_minutes         = h.get("max_audio_minutes", 20.0)
             if h.get("model_ready"):
+                mt_tag = "✅ multi-turn" if st.session_state.model_supports_multi_turn else "❌ single-turn only"
                 status_box.success(
                     f"✅  Model ready\n\n"
                     f"**{model_name}**\n\n"
-                    f"Profile: `{h['profile']}`"
+                    f"Profile: `{h['profile']}`\n\n"
+                    f"{mt_tag} · max {st.session_state.max_audio_minutes:.1f} min audio context"
                 )
             else:
                 status_box.warning("⚠️  Backend is up but model is still loading…")
@@ -136,7 +162,109 @@ with st.sidebar:
         st.session_state.history = []
         st.session_state.last_audio_key = None
         st.rerun()
+    # ── Multi-turn controls ─────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("🔁  Multi-turn")
 
+    if not st.session_state.model_supports_multi_turn:
+        st.caption(
+            "⚠️  Multi-turn is disabled by the server.  "
+            "Click **Check backend** above to refresh capabilities."
+        )
+    else:
+        multi_turn_toggle = st.toggle(
+            "Enable multi-turn mode",
+            value=st.session_state.multi_turn_enabled,
+            help=(
+                "When ON, every message you send is part of the same ongoing "
+                "conversation. The model sees all prior turns as context.\n\n"
+                "Toggle OFF to reset and go back to single-turn mode."
+            ),
+        )
+        if multi_turn_toggle != st.session_state.multi_turn_enabled:
+            st.session_state.multi_turn_enabled = multi_turn_toggle
+            if not multi_turn_toggle:
+                # Reset conversation when disabling
+                st.session_state.conversation_id = None
+                st.session_state.session_turns   = []
+            st.rerun()
+
+        if st.session_state.multi_turn_enabled:
+            # ── Active conversation info ───────────────────────────────
+            if st.session_state.conversation_id:
+                st.caption(f"Session: `{st.session_state.conversation_id}`")
+            else:
+                st.caption("💡 A new session will be created on your first send.")
+
+            # ── Context budget meter ───────────────────────────────────
+            if st.session_state.session_turns:
+                used_min = sum(
+                    t["audio_duration_s"]
+                    for t in st.session_state.session_turns
+                ) / 60.0
+                max_min  = st.session_state.max_audio_minutes
+                pct      = min(used_min / max(max_min, 0.01), 1.0)
+                st.progress(
+                    pct,
+                    text=(
+                        f"📊 Audio context: **{used_min:.1f}** / {max_min:.1f} min "
+                        f"({pct * 100:.0f}%)"
+                    ),
+                )
+                if pct >= 0.85:
+                    st.warning(
+                        "⚠️ Approaching context limit. "
+                        "Delete older turns below to free up space."
+                    )
+
+            # ── Turn prune panel ────────────────────────────────────
+            if st.session_state.session_turns:
+                with st.expander(
+                    f"🗂️  Conversation turns ({len(st.session_state.session_turns)})",
+                    expanded=False,
+                ):
+                    for turn in st.session_state.session_turns:
+                        c1, c2 = st.columns([5, 1])
+                        with c1:
+                            preview = turn.get("response_preview", "")[:80]
+                            st.caption(
+                                f"**Turn {turn['turn_index']}** · "
+                                f"{turn['audio_duration_s']:.1f}s audio · "
+                                f"{turn['audio_tokens']} tokens\n\n"
+                                f"“{preview}…”"
+                            )
+                        with c2:
+                            if st.button(
+                                "🗑️",
+                                key=f"del_turn_{turn['turn_index']}",
+                                help=f"Remove turn {turn['turn_index']} from context",
+                            ):
+                                try:
+                                    del_r = requests.delete(
+                                        f"{backend_url}/conversation/"
+                                        f"{st.session_state.conversation_id}"
+                                        f"/turn/{turn['turn_index']}",
+                                        timeout=5,
+                                    )
+                                    if del_r.ok:
+                                        st.session_state.session_turns = [
+                                            t for t in st.session_state.session_turns
+                                            if t["turn_index"] != turn["turn_index"]
+                                        ]
+                                        st.rerun()
+                                    else:
+                                        st.error(
+                                            f"Delete failed: {del_r.status_code} — "
+                                            f"{del_r.text[:200]}"
+                                        )
+                                except Exception as exc:
+                                    st.error(f"Error deleting turn: {exc}")
+
+            # ── New conversation button ──────────────────────────────
+            if st.button("↩️  Start new conversation", use_container_width=True):
+                st.session_state.conversation_id = None
+                st.session_state.session_turns   = []
+                st.rerun()
 # ── Main layout ────────────────────────────────────────────────────────────────
 
 st.title("🎙️  Omni Voice Assistant")
@@ -246,6 +374,12 @@ if st.session_state.active_audio:
         if system_prompt.strip():
             data["system_prompt"] = system_prompt.strip()
 
+        # Multi-turn: pass mode flag and any existing conversation_id
+        if st.session_state.multi_turn_enabled:
+            data["multi_turn"] = "true"
+            if st.session_state.conversation_id:
+                data["conversation_id"] = st.session_state.conversation_id
+
         try:
             resp = requests.post(
                 f"{backend_url}/infer/submit",
@@ -254,11 +388,15 @@ if st.session_state.active_audio:
                 timeout=30,  # only the upload — inference runs in background
             )
             resp.raise_for_status()
-            st.session_state.job_id           = resp.json()["job_id"]
+            resp_json = resp.json()
+            st.session_state.job_id           = resp_json["job_id"]
             st.session_state.job_start_time   = time.perf_counter()
             st.session_state.job_audio        = audio_to_send
             st.session_state.job_audio_label  = st.session_state.active_audio_label
             st.session_state.job_system_prompt = system_prompt.strip() or "(server default)"
+            # Capture conversation_id returned by backend (may be newly created)
+            if resp_json.get("conversation_id"):
+                st.session_state.conversation_id = resp_json["conversation_id"]
             st.rerun()
         except requests.exceptions.HTTPError as exc:
             st.error(f"Submit failed ({exc.response.status_code}): {exc.response.text}")
@@ -319,7 +457,16 @@ if st.session_state.job_id:
                         f"for `{audio_url}`\n\n{ar.text[:300]}"
                     )
 
-            # ── Save to history ────────────────────────────────────────────
+            # ── Capture multi-turn session metadata ─────────────────────────
+            if result.get("conversation_id"):
+                st.session_state.conversation_id = result["conversation_id"]
+            if result.get("turn_summary"):
+                st.session_state.session_turns.append({
+                    "turn_index":       result["turn_index"],
+                    **result["turn_summary"],
+                })
+
+            # ── Save to history ──────────────────────────────────────────────────
             st.session_state.history.append({
                 "question_audio": st.session_state.job_audio,
                 "question_label": st.session_state.job_audio_label,
@@ -329,6 +476,8 @@ if st.session_state.job_id:
                 "latency_s":      result["latency_s"],
                 "model":          result["model"],
                 "wall_s":         wall_s,
+                "conversation_id": result.get("conversation_id"),
+                "turn_index":     result.get("turn_index"),
             })
 
             # ── Clear job state ────────────────────────────────────────────

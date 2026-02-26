@@ -57,8 +57,9 @@ class InferenceService:
     def infer_from_file(
         self,
         input_path:    str | Path,
-        system_prompt: Optional[str]      = None,
+        system_prompt: Optional[str]        = None,
         output_path:   Optional[str | Path] = None,
+        history:       Optional[list]        = None,  # list[HistoryTurn]
     ) -> dict:
         """
         Full pipeline: audio file → text + saved audio file.
@@ -93,6 +94,7 @@ class InferenceService:
             audio         = audio,
             sample_rate   = sr,
             system_prompt = system_prompt,
+            history       = history or [],
         )
 
         # 3. Persist audio output if present
@@ -108,6 +110,7 @@ class InferenceService:
         sample_rate:   int,
         system_prompt: Optional[str]        = None,
         output_path:   Optional[str | Path] = None,
+        history:       Optional[list]        = None,  # list[HistoryTurn]
     ) -> dict:
         """
         Inference directly from a numpy audio array.
@@ -124,6 +127,7 @@ class InferenceService:
             audio         = audio,
             sample_rate   = sample_rate,
             system_prompt = system_prompt,
+            history       = history or [],
         )
 
         saved_path = self._save_audio_if_present(result, output_path)

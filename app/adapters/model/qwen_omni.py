@@ -115,9 +115,13 @@ class QwenOmniBackend(ModelBackend):
         audio: np.ndarray,
         sample_rate: int,
         system_prompt: Optional[str] = None,
+        history: Optional[list] = None,   # list[HistoryTurn] — avoids circular import
     ) -> InferenceResult:
         """
         Run a full audio-in → text+audio inference pass.
+
+        history is a list of HistoryTurn objects (prior turns) for multi-turn
+        mode. Pass None or [] for single-turn (stateless) behaviour.
 
         The numpy audio array is written to a temporary WAV file so that
         qwen_omni_utils.process_mm_info can load it consistently.
@@ -129,15 +133,12 @@ class QwenOmniBackend(ModelBackend):
         prompt_text = system_prompt or self._cfg.system_prompt
 
         # ── Write audio to temp file ──────────────────────────────────────────
-        # process_mm_info reliably handles file paths across all versions of
-        # qwen_omni_utils. Using a file path avoids potential numpy array
-        # handling differences between library versions.
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             tmp_path = Path(f.name)
 
         try:
             sf.write(str(tmp_path), audio.reshape(-1), samplerate=sample_rate)
-            result = self._run_inference(str(tmp_path), prompt_text)
+            result = self._run_inference(str(tmp_path), prompt_text, history=history or [])
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -145,20 +146,45 @@ class QwenOmniBackend(ModelBackend):
 
     # ── Private helpers ───────────────────────────────────────────────────────
 
-    def _run_inference(self, audio_path: str, prompt_text: str) -> InferenceResult:
-        """Core inference logic — separated for readability."""
+    def _run_inference(
+        self,
+        audio_path: str,
+        prompt_text: str,
+        history: Optional[list] = None,   # list[HistoryTurn]
+    ) -> InferenceResult:
+        """
+        Core inference logic — separated for readability.
+
+        When history is non-empty, prior turns are inserted as
+        alternating user (audio) + assistant (text) message pairs
+        before the current user message, giving the model full
+        conversational context.
+        """
         from qwen_omni_utils import process_mm_info  # type: ignore
 
-        messages = [
+        messages: list[dict] = [
             {
                 "role": "system",
                 "content": [{"type": "text", "text": prompt_text}],
             },
-            {
-                "role": "user",
-                "content": [{"type": "audio", "audio": audio_path}],
-            },
         ]
+
+        # ── Inject prior conversation turns ───────────────────────────────────
+        for turn in (history or []):
+            messages.append({
+                "role": "user",
+                "content": [{"type": "audio", "audio": turn.input_audio_path}],
+            })
+            messages.append({
+                "role": "assistant",
+                "content": [{"type": "text", "text": turn.response_text}],
+            })
+
+        # ── Current turn ──────────────────────────────────────────────────────
+        messages.append({
+            "role": "user",
+            "content": [{"type": "audio", "audio": audio_path}],
+        })
 
         # ── Tokenise + prepare multimodal inputs ──────────────────────────────
         text_prompt = self.processor.apply_chat_template(

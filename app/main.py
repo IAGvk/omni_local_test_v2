@@ -63,6 +63,13 @@ async def lifespan(app: FastAPI):
         )
         sys.exit(1)
 
+    # ── Purge expired conversation sessions ───────────────────────────────────
+    from app.services.session import SessionManager
+    session_mgr = SessionManager(settings=cfg)
+    n_cleaned = session_mgr.cleanup_expired_sessions()
+    if n_cleaned:
+        logger.info("Session cleanup: removed %d expired session(s).", n_cleaned)
+
     # ── Load model (blocks until weights are in device memory) ────────────────
     registry = ModelRegistry(settings=cfg)
     registry.load()
